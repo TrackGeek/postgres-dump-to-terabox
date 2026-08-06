@@ -273,21 +273,54 @@ function uploader(credentials: TeraboxCredentials, appId: string): TeraboxUpload
   return new TeraboxUploader({ ndus: credentials.ndus, appId, jsToken: credentials.jsToken });
 }
 
-/** Idempotent: an already existing directory is not an error. */
+/** Listing a directory that does not exist. */
+const ERRNO_NOT_FOUND = -9;
+/** Creating something whose name is already taken. */
+const ERRNO_ALREADY_EXISTS = -8;
+
+/**
+ * Creating a directory that already exists does NOT fail on Terabox: the server
+ * silently makes a twin named `<dir>_YYYYMMDD_HHMMSS`, so a blind create on every
+ * run litters the account with empty folders. Look before leaping, and pass
+ * `rtype=0` so a concurrent creator collides instead of getting another twin.
+ */
 export async function ensureRemoteDir(
   remoteDir: string,
   credentials: TeraboxCredentials,
   appId: string,
 ): Promise<void> {
-  const result = await uploader(credentials, appId).createDirectory(remoteDir);
-  const errno = result.data?.errno;
-
-  // -8 is "file already exists".
-  if (result.success && (errno === 0 || errno === -8 || errno === undefined)) {
+  try {
+    await listRemoteFiles(remoteDir, credentials, appId);
     return;
+  } catch (error) {
+    if (!(error instanceof TeraboxApiError) || error.errno !== ERRNO_NOT_FOUND) {
+      throw error;
+    }
   }
 
-  logger.warn("Could not confirm the remote directory exists", { remoteDir, errno, message: result.message });
+  logger.info("Creating the remote directory", { remoteDir });
+
+  try {
+    await postForm(
+      apiUrl("/api/create", credentials, newDpLogId(), appId),
+      new URLSearchParams({
+        path: remoteDir,
+        isdir: "1",
+        size: "0",
+        block_list: "[]",
+        local_mtime: String(Math.floor(Date.now() / 1000)),
+        rtype: "0",
+      }),
+      credentials.ndus,
+      "create directory",
+    );
+  } catch (error) {
+    if (error instanceof TeraboxApiError && error.errno === ERRNO_ALREADY_EXISTS) {
+      return;
+    }
+
+    throw error;
+  }
 }
 
 export async function listRemoteFiles(

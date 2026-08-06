@@ -1,0 +1,21 @@
+services:
+  backup:
+    build:
+      context: .
+      args:
+        POSTGRES_MAJOR: 18
+    image: trackgeek-backup
+    container_name: trackgeek-backup
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      TMP_DIR: /app/tmp
+      TERABOX_STORAGE_STATE: /app/secrets/storageState.json
+    volumes:
+      - ./secrets:/app/secrets:ro
+      - backup-tmp:/app/tmp
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  backup-tmp:

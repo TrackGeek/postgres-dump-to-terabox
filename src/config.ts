@@ -84,6 +84,7 @@ export const config = {
     storageStatePath: resolve(optional("TERABOX_STORAGE_STATE", "./secrets/storageState.json")),
   },
   backup: {
+    pgDumpBin: optional("PG_DUMP_BIN", "pg_dump"),
     prefix: optional("BACKUP_PREFIX", "trackgeek"),
     retentionDays: integer("RETENTION_DAYS", 7),
     tmpDir: resolve(optional("TMP_DIR", "./tmp")),

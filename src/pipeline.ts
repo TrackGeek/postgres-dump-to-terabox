@@ -78,7 +78,12 @@ export async function runBackup(): Promise<void> {
     ]);
 
     stage = "dumped";
-    const dump = await createDump(config.databaseUrl, config.backup.tmpDir, config.backup.prefix);
+    const dump = await createDump(
+      config.databaseUrl,
+      config.backup.tmpDir,
+      config.backup.prefix,
+      config.backup.pgDumpBin,
+    );
     localDumpPath = dump.path;
 
     await notifier.notify("dumped", [

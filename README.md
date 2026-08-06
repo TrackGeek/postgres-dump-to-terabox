@@ -18,9 +18,10 @@ cron (0 */12 * * *)
 
 ## Setup
 
+O caminho padrão é Docker: a imagem carrega o `pg_dump` na versão certa e o Chromium do Playwright, então não depende de nada instalado no host.
+
 ```bash
-bun install
-bunx playwright install chromium
+docker compose build
 ```
 
 Crie um `.env` na raiz do projeto:
@@ -43,49 +44,83 @@ RETENTION_DAYS='7'
 CRON_SCHEDULE='0 */12 * * *'
 RUN_ON_BOOT='true'
 DRY_RUN='false'
-TMP_DIR='./tmp'
 TZ='America/Sao_Paulo'
 ```
 
 Só `DATABASE_URL` é obrigatório — o resto tem default igual ao mostrado acima. Sem `DISCORD_WEBHOOK_URL` os estágios só vão para o log.
 
-### Login no Terabox (uma vez)
+No Docker, `TMP_DIR` e `TERABOX_STORAGE_STATE` são definidos pelo `compose.yaml` e devem ficar **fora** do `.env`.
+
+Se o banco rodar no host (dev), use `host.docker.internal` no lugar de `localhost` — o `compose.yaml` já mapeia esse host:
+
+```dotenv
+DATABASE_URL='postgres://postgres:postgres@host.docker.internal:20141/trackgeek'
+```
+
+### Login no Terabox (uma vez, no host)
 
 ```bash
+bun install
+bunx playwright install chromium
 bun run login
 ```
 
 Abre um Chromium **visível**. Logue normalmente (CAPTCHA incluso). Assim que o cookie `ndus` aparecer, a sessão é gravada em `secrets/storageState.json` com permissão `600` e o browser fecha sozinho.
+
+Esse passo é o único que precisa de tela, então fica no host. O container monta `./secrets` como **somente leitura** e só consome a sessão.
 
 Repita só quando a sessão expirar — o job avisa no Discord com "Rodar `bun run login` no servidor" quando isso acontecer.
 
 ## Uso
 
 ```bash
-bun run start   # daemon: cron 0 */12 * * * + execução no boot
-bun run once    # uma execução e sai (exit 0/1) — para system cron ou teste
+docker compose up -d                          # daemon: cron 0 */12 * * * + execução no boot
+docker compose logs -f                        # acompanhar
+docker compose run --rm backup bun run once   # uma execução avulsa e sai
 ```
 
 Com `DRY_RUN=true` o dump e o upload acontecem normalmente, mas a limpeza só **lista** o que apagaria.
 
-### Rodar como serviço
+### Versão do PostgreSQL
 
-```bash
-pm2 start "bun run start" --name trackgeek-backup
+`pg_dump` se recusa a dumpar um servidor **mais novo** que ele. A imagem instala o client do PGDG, fixado pelo build arg em `compose.yaml`:
+
+```yaml
+build:
+  args:
+    POSTGRES_MAJOR: 18
 ```
 
-Ou, se preferir o cron do sistema em vez do daemon, use `bun run once` no crontab e deixe `RUN_ON_BOOT` fora da jogada:
+Servidor subiu de major? Troque o número e `docker compose build`. Versões antigas continuam funcionando — o client novo dumpa servidores anteriores numa boa.
 
-```cron
-0 */12 * * * cd /caminho/postgres-dump-to-terabox && /opt/homebrew/bin/bun run once >> tmp/backup.log 2>&1
+### Sem Docker (opcional)
+
+```bash
+bun install && bunx playwright install chromium
+bun run start   # daemon
+bun run once    # execução avulsa
+```
+
+Aqui o `pg_dump` vem do host e precisa ser >= o servidor. Se o do PATH for velho, aponte outro sem mexer no sistema:
+
+```dotenv
+PG_DUMP_BIN='/opt/homebrew/opt/postgresql@18/bin/pg_dump'
 ```
 
 ## Restaurar um backup
 
 ```bash
 pg_restore --clean --if-exists --no-owner --no-privileges \
-  --dbname='postgres://postgres:postgres@localhost:20141/trackgeek' \
+  --dbname='postgres://usuario:senha@host:5432/trackgeek' \
   trackgeek-20260805-030000.dump
+```
+
+Sem `pg_restore` na versão certa no host, use a própria imagem:
+
+```bash
+docker compose run --rm -v "$PWD:/restore" backup \
+  pg_restore --clean --if-exists --no-owner --no-privileges \
+  --dbname="$DATABASE_URL" /restore/trackgeek-20260805-030000.dump
 ```
 
 Para só conferir a integridade do arquivo: `pg_restore --list arquivo.dump`.
@@ -113,7 +148,7 @@ Nenhum estágio loga a `DATABASE_URL` (ela só vai no argv do `pg_dump`), e o `j
 
 ## Notas operacionais
 
-- `pg_dump` precisa ser >= a versão major do servidor Postgres.
+- A imagem embute `pg_dump` 18 (PGDG) e o Chromium do Playwright; ~1.9 GB. O Chromium existe só para o fallback do jsToken.
 - `fetchFileList` da lib é fixado em `num=100&page=1`. Com 2 backups/dia e 7 dias de retenção (~14 arquivos) sobra folga; se aumentar muito a retenção, isso vira paginação a implementar.
 - O Terabox não tem API pública: endpoints e formato do `jsToken` podem mudar sem aviso. O fallback Playwright cobre mudança de HTML, não mudança de protocolo.
 - `secrets/`, `tmp/` e `.env` estão no `.gitignore`.

@@ -35,10 +35,31 @@ export function parseDumpDate(fileName: string, prefix: string): Date | null {
 }
 
 /**
+ * pg_dump refuses to talk to a newer server, and the raw message does not say how to
+ * fix it — spell the fix out, because this breaks again on every server major upgrade.
+ */
+function versionHint(stderr: string): string {
+  const match = /server version: (\d+)[^\n]*?pg_dump version: (\d+)/s.exec(stderr);
+
+  if (!match) {
+    return "";
+  }
+
+  const [, serverMajor, clientMajor] = match;
+
+  return `\n\nThe client tools are older than the server (pg_dump ${clientMajor} vs server ${serverMajor}). Install PostgreSQL ${serverMajor} client tools and point PG_DUMP_BIN at them, e.g. PG_DUMP_BIN='/opt/homebrew/opt/libpq/bin/pg_dump'.`;
+}
+
+/**
  * Custom format is already zlib-compressed and restores with `pg_restore`, so no
  * external gzip step is needed. The connection URL only ever reaches argv, never the logs.
  */
-export async function createDump(databaseUrl: string, tmpDir: string, prefix: string): Promise<DumpResult> {
+export async function createDump(
+  databaseUrl: string,
+  tmpDir: string,
+  prefix: string,
+  binary = "pg_dump",
+): Promise<DumpResult> {
   const startedAt = Date.now();
 
   await mkdir(tmpDir, { recursive: true });
@@ -59,7 +80,7 @@ export async function createDump(databaseUrl: string, tmpDir: string, prefix: st
 
   try {
     await new Promise<void>((resolve, reject) => {
-      const child = spawn("pg_dump", args, { stdio: ["ignore", "ignore", "pipe"] });
+      const child = spawn(binary, args, { stdio: ["ignore", "ignore", "pipe"] });
       let stderr = "";
 
       child.stderr.on("data", (chunk: Buffer) => {
@@ -69,7 +90,7 @@ export async function createDump(databaseUrl: string, tmpDir: string, prefix: st
       child.on("error", (error) => {
         reject(
           error instanceof Error && (error as NodeJS.ErrnoException).code === "ENOENT"
-            ? new Error("pg_dump not found in PATH. Install the PostgreSQL client tools.")
+            ? new Error(`${binary} not found. Install the PostgreSQL client tools or set PG_DUMP_BIN.`)
             : error,
         );
       });
@@ -82,7 +103,7 @@ export async function createDump(databaseUrl: string, tmpDir: string, prefix: st
 
         const tail = stderr.trim().split("\n").slice(-5).join("\n");
 
-        reject(new Error(`pg_dump exited with code ${code}${tail ? `:\n${tail}` : ""}`));
+        reject(new Error(`${binary} exited with code ${code}${tail ? `:\n${tail}` : ""}${versionHint(stderr)}`));
       });
     });
 

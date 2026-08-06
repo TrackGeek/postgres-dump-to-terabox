@@ -33,7 +33,6 @@ declare module "terabox-upload-tool" {
 
   export default class TeraboxUploader {
     constructor(credentials: TeraboxCredentialsInput);
-    createDirectory(directoryPath: string): Promise<TeraboxResult<{ errno: number; errmsg?: string }>>;
     fetchFileList(directory?: string): Promise<TeraboxResult<TeraboxListResponse>>;
     deleteFiles(fileList: string[]): Promise<TeraboxResult<{ errno: number; errmsg?: string; taskid?: number }>>;
   }
