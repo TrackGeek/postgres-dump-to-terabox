@@ -1,17 +1,9 @@
-# Chromium and every system lib it needs already live in this image, so the build never
-# downloads a browser nor runs `playwright install --with-deps` — the two slowest steps,
-# and the ones that hurt most in CI, where the arm64 build runs under QEMU emulation.
-# Keep this tag pinned to the exact "playwright" version in package.json: the browsers
-# baked in are the ones that release expects.
-FROM mcr.microsoft.com/playwright:v1.62.1-noble
-
-# The base image ships Node, not Bun. `bunx` is the same binary under another name.
-COPY --from=oven/bun:1-debian /usr/local/bin/bun /usr/local/bin/bun
-RUN ln -s /usr/local/bin/bun /usr/local/bin/bunx
+# No browser lives in this image: the pipeline talks to Terabox over plain fetch, and
+# the one step that needs a real browser (`bun run login`) runs on a workstation and
+# leaves nothing behind but secrets/storageState.json.
+FROM oven/bun:1-slim
 
 ENV DEBIAN_FRONTEND=noninteractive \
-    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
-    PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
     TMP_DIR=/app/tmp \
     TERABOX_STORAGE_STATE=/app/secrets/storageState.json
 
@@ -28,24 +20,19 @@ http://apt.postgresql.org/pub/repos/apt $(. /etc/os-release && echo "$VERSION_CO
        > /etc/apt/sources.list.d/pgdg.list \
   && apt-get update \
   && apt-get install -y --no-install-recommends "postgresql-client-${POSTGRES_MAJOR}" \
+  && apt-get purge -y --auto-remove curl gnupg \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
+# --production drops playwright (a devDependency, for the login script only) along with
+# the rest of the toolchain.
 COPY package.json bun.lock ./
-RUN bun install --frozen-lockfile
+RUN bun install --frozen-lockfile --production
 
-# A bumped playwright package expects a Chromium revision this image does not carry, and
-# the failure would otherwise surface at 3 a.m. in a cron run. Fail here instead.
-RUN set -eu; \
-    location="$(bunx playwright install chromium --dry-run | awk '/Install location/ { print $3; exit }')"; \
-    test -d "$location" \
-      || { echo "Missing $location: the playwright package and the base image tag drifted apart."; exit 1; }
-
-COPY tsconfig.json biome.json ./
+COPY tsconfig.json ./
 COPY types ./types
 COPY src ./src
-COPY scripts ./scripts
 
 RUN mkdir -p /app/tmp /app/secrets
 

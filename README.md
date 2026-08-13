@@ -16,7 +16,6 @@
   <img src="https://img.shields.io/badge/PostgreSQL-99e3a0?style=for-the-badge&logo=postgresql&logoColor=004b38">
   <img src="https://img.shields.io/badge/Docker-99e3a0?style=for-the-badge&logo=docker&logoColor=004b38">
   <br>
-  <img src="https://img.shields.io/badge/Playwright-99e3a0?style=for-the-badge&logo=playwright&logoColor=004b38">
   <img src="https://img.shields.io/badge/node--cron-99e3a0?style=for-the-badge&logo=nodedotjs&logoColor=004b38">
   <img src="https://img.shields.io/badge/Discord-99e3a0?style=for-the-badge&logo=discord&logoColor=004b38">
   <img src="https://img.shields.io/badge/Biome-99e3a0?style=for-the-badge&logo=biome&logoColor=004b38">
@@ -28,7 +27,7 @@
 
 Scheduled backup job for the [TrackGeek API](https://github.com/TrackGeek/api) database. Every 12 hours it dumps PostgreSQL, uploads the dump to Terabox in 4 MiB chunks, deletes backups older than 7 days, and reports every stage to a Discord webhook.
 
-It runs as a long-lived container with its own cron scheduler — no host crontab, no external orchestrator. The image ships the PostgreSQL client tools and the Playwright Chromium, so it does not depend on anything installed on the host.
+It runs as a long-lived container with its own cron scheduler — no host crontab, no external orchestrator. The image ships the PostgreSQL client tools and nothing else it does not need: no browser, since every Terabox call is a plain `fetch`.
 
 </samp>
 
@@ -45,7 +44,7 @@ cron (0 */12 * * *)
 
 - **Dump**: `pg_dump --format=custom`, already compressed and restorable with `pg_restore`.
 - **Upload**: custom 4 MiB chunked implementation (`precreate` → `superfile2` → `create`). The `uploadFile` helper from `terabox-upload-tool` is not used: it loads the whole file into RAM and sends a single block (`partseq=0`), which corrupts any file above 4 MiB. Only `fetchFileList` and `deleteFiles` come from the library.
-- **Token**: the `ndus` cookie comes from a `storageState.json` saved by a manual login. The `jsToken` comes from a `fetch` of the `/main` page with that cookie; Playwright only starts up (headless, rehydrating the same `storageState`) when the HTML format changes. There is never an automated login, so there is never a CAPTCHA.
+- **Token**: the `ndus` cookie comes from a `storageState.json` saved by a manual login. The `jsToken` comes from a `fetch` of the `/main` page with that cookie — no browser at runtime. There is never an automated login, so there is never a CAPTCHA.
 - **Retention**: the date comes from the timestamp in the file name (`trackgeek-YYYYMMDD-HHmmss.dump`), with `server_mtime` as a fallback. Files that do not match the prefix are ignored.
 
 </samp>
@@ -67,8 +66,7 @@ cron (0 */12 * * *)
 
 **Session**
 - `ndus` cookie read from a `storageState.json` written by a one-time manual login;
-- `jsToken` scraped from the `/main` page over plain `fetch`;
-- Headless Playwright only as a fallback when the page HTML changes;
+- `jsToken` scraped from the `/main` page over plain `fetch`, no browser involved;
 - No automated login, therefore no CAPTCHA.
 
 **Retention**
@@ -100,7 +98,7 @@ cron (0 */12 * * *)
 | Language           | TypeScript 5.7                                 |
 | Database Tools     | PostgreSQL 18 client (pg_dump / pg_restore)    |
 | Scheduler          | node-cron 4                                    |
-| Browser Automation | Playwright 1.59 (Chromium)                     |
+| Login (host only)  | Playwright 1.62 (Chromium)                     |
 | Remote Storage     | Terabox (terabox-upload-tool)                  |
 | Notifications      | Discord Webhooks                               |
 | Linting            | Biome                                          |
@@ -124,7 +122,7 @@ src/
 ├── notify/
 │   └── discord.ts          # Discord webhook embeds per stage
 └── terabox/
-    ├── auth.ts             # ndus cookie + jsToken (with Playwright fallback)
+    ├── auth.ts             # ndus cookie + jsToken, over plain fetch
     ├── client.ts           # Chunked upload, file listing, deletion
     └── constants.ts        # Endpoints and shared errors
 scripts/
@@ -195,7 +193,7 @@ bun run login
 
 It opens a **visible** Chromium. Log in normally (CAPTCHA included). As soon as the `ndus` cookie shows up, the session is written to `secrets/storageState.json` with `600` permissions and the browser closes itself.
 
-This is the only step that needs a screen, so it stays on the host. The container mounts `./secrets` as **read-only** and merely consumes the session.
+This is the only step that needs a browser at all, so it stays on the host — `playwright` is a devDependency and never reaches the image. The container mounts `./secrets` as **read-only** and merely consumes the session.
 
 Repeat it only when the session expires — the job reports it on Discord with a "run `bun run login` on the server" message when that happens.
 
@@ -228,7 +226,7 @@ If the server moves to a new major, change the number and run `docker compose bu
 **Without Docker (optional)**
 
 ```bash
-bun install && bunx playwright install chromium
+bun install
 bun run start   # daemon
 bun run once    # single run
 ```
@@ -333,9 +331,9 @@ The project **never** creates a share link. The library's `generateShortUrl` cal
 
 <samp>
 
-- The image embeds `pg_dump` 18 (PGDG) and the Playwright Chromium; ~1.9 GB. Chromium exists only for the jsToken fallback.
+- The image is `oven/bun:1-slim` plus `pg_dump` 18 (PGDG) — no browser, no devDependencies (`bun install --production`).
 - The library's `fetchFileList` is pinned at `num=100&page=1`. With 2 backups/day and 7 days of retention (~14 files) there is plenty of headroom; a much longer retention would require implementing pagination.
-- Terabox has no public API: endpoints and the `jsToken` format can change without notice. The Playwright fallback covers HTML changes, not protocol changes.
+- Terabox has no public API: endpoints, the page HTML and the `jsToken` format can change without notice. Any of those breaks the `auth` stage, and the fix is a code change — not a re-login.
 
 </samp>
 

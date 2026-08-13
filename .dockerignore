@@ -1,6 +1,8 @@
 node_modules
 tmp
 secrets
+scripts
+biome.json
 .env
 .env.local
 *.dump

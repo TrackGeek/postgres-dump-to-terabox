@@ -73,7 +73,6 @@ export async function runBackup(): Promise<void> {
     const credentials = await getCredentials(config.terabox.storageStatePath);
 
     await notifier.notify("auth", [
-      { name: "Origem do token", value: credentials.source },
       { name: "jsToken", value: `${credentials.jsToken.slice(0, 8)}… (${credentials.jsToken.length} chars)` },
     ]);
 

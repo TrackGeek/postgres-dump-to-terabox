@@ -5,12 +5,12 @@
       "name": "postgres-dump-to-terabox",
       "dependencies": {
         "node-cron": "^4.2.1",
-        "playwright": "1.62.1",
         "terabox-upload-tool": "^1.4.1",
       },
       "devDependencies": {
         "@biomejs/biome": "2.4.12",
         "@types/node": "^22.10.7",
+        "playwright": "1.62.1",
         "typescript": "^5.7.3",
       },
     },

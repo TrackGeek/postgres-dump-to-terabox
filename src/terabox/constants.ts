@@ -46,7 +46,10 @@ const NETWORK_FAILURE_MARKERS = [
   "FailedToOpenSocket",
 ];
 
-/** Bun, Node and Chromium all word this differently, so match on any of their markers. */
+/**
+ * Bun, Node and Chromium all word this differently, so match on any of their markers.
+ * The `ERR_*` ones only ever come from `bun run login`, the single browser-driven step.
+ */
 export function isNetworkFailure(error: unknown): boolean {
   if (error instanceof NetworkError) {
     return true;

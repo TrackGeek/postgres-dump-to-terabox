@@ -12,7 +12,6 @@ import {
 export interface TeraboxCredentials {
   ndus: string;
   jsToken: string;
-  source: "fetch" | "playwright";
 }
 
 interface StorageState {
@@ -123,76 +122,19 @@ async function jsTokenViaFetch(session: Session): Promise<string | null> {
   return JS_TOKEN_PATTERN.exec(await response.text())?.[1] ?? null;
 }
 
-/**
- * Fallback for when the HTML layout changes: rehydrate the saved session in a real
- * browser and read the token the page itself computed. Never logs in, so no CAPTCHA.
- */
-async function jsTokenViaPlaywright(storageStatePath: string): Promise<string | null> {
-  const { chromium } = await import("playwright");
-  // Chromium's built-in async resolver ignores part of the container's DNS setup and
-  // fails with ERR_NAME_NOT_RESOLVED where getaddrinfo (and therefore fetch) succeeds.
-  const browser = await chromium.launch({
-    headless: true,
-    args: ["--disable-features=AsyncDns", "--dns-prefetch-disable"],
-  });
-
-  try {
-    const context = await browser.newContext({ storageState: storageStatePath, userAgent: USER_AGENT });
-    const page = await context.newPage();
-
-    await page.goto(MAIN_PAGE_URL, { waitUntil: "domcontentloaded", timeout: 60_000 });
-
-    if (isLoggedOut(page.url())) {
-      throw new SessionExpiredError("Terabox redirected the saved session to the login page.");
-    }
-
-    const fromWindow = await page.evaluate(() => (globalThis as any).jsToken as string | undefined);
-
-    if (typeof fromWindow === "string" && fromWindow.length >= 16) {
-      return fromWindow;
-    }
-
-    const html = await page.content();
-
-    return JS_TOKEN_PATTERN.exec(html)?.[1] ?? JS_TOKEN_PATTERN.exec(encodeURIComponent(html))?.[1] ?? null;
-  } finally {
-    await browser.close();
-  }
-}
-
 export async function getCredentials(storageStatePath: string): Promise<TeraboxCredentials> {
   const session = readSession(storageStatePath);
-
-  try {
-    const jsToken = await jsTokenViaFetch(session);
-
-    if (jsToken) {
-      return { ndus: session.ndus, jsToken, source: "fetch" };
-    }
-
-    logger.warn("jsToken not found in the fetched HTML, falling back to Playwright");
-  } catch (error) {
-    // Playwright goes out over the same network stack, so retrying there only buys
-    // a 60 s timeout and an error that blames the session for a DNS problem.
-    if (isNetworkFailure(error)) {
-      throw new NetworkError(
-        `Could not reach ${TERABOX_ORIGIN}: ${error instanceof Error ? error.message : String(error)}.`,
-      );
-    }
-
-    logger.warn("Fetching the Terabox main page failed, falling back to Playwright", {
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
 
   let jsToken: string | null;
 
   try {
-    jsToken = await jsTokenViaPlaywright(storageStatePath);
+    jsToken = await jsTokenViaFetch(session);
   } catch (error) {
+    // A dead resolver would otherwise surface as "run `bun run login`", which is the
+    // one thing that cannot fix DNS.
     if (isNetworkFailure(error)) {
       throw new NetworkError(
-        `Could not reach ${TERABOX_ORIGIN} from the browser: ${error instanceof Error ? error.message : String(error)}.`,
+        `Could not reach ${TERABOX_ORIGIN}: ${error instanceof Error ? error.message : String(error)}.`,
       );
     }
 
@@ -200,8 +142,10 @@ export async function getCredentials(storageStatePath: string): Promise<TeraboxC
   }
 
   if (!jsToken) {
-    throw new SessionExpiredError("Could not extract a jsToken through fetch or Playwright.");
+    throw new SessionExpiredError(
+      "No jsToken in the Terabox main page HTML — the session expired or the page layout changed.",
+    );
   }
 
-  return { ndus: session.ndus, jsToken, source: "playwright" };
+  return { ndus: session.ndus, jsToken };
 }
