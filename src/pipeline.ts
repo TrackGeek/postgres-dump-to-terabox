@@ -5,7 +5,7 @@ import { formatBytes, formatDuration, logger } from "./logger";
 import { DiscordNotifier, type Stage } from "./notify/discord";
 import { getCredentials } from "./terabox/auth";
 import { deleteRemoteFiles, ensureRemoteDir, listRemoteFiles, privateFolderUrl, uploadChunked } from "./terabox/client";
-import { SessionExpiredError } from "./terabox/constants";
+import { NetworkError, SessionExpiredError } from "./terabox/constants";
 
 const notifier = new DiscordNotifier(config.discordWebhookUrl);
 
@@ -126,7 +126,12 @@ export async function runBackup(): Promise<void> {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const stack = error instanceof Error && error.stack ? error.stack.split("\n").slice(1, 5).join("\n") : "";
-    const expiredSession = error instanceof SessionExpiredError;
+    const action =
+      error instanceof SessionExpiredError
+        ? "Rodar `bun run login` no servidor"
+        : error instanceof NetworkError
+          ? "Sem DNS/rede no container — checar `dns:` no docker-compose e VPN do host"
+          : null;
 
     logger.error("Backup failed", { stage, error: message });
 
@@ -136,7 +141,7 @@ export async function runBackup(): Promise<void> {
         { name: "Estágio", value: stage },
         { name: "Banco", value: config.databaseLabel },
         { name: "Duração até falhar", value: formatDuration(Date.now() - startedAt) },
-        ...(expiredSession ? [{ name: "Ação", value: "Rodar `bun run login` no servidor", inline: false }] : []),
+        ...(action ? [{ name: "Ação", value: action, inline: false }] : []),
       ],
       `**${message}**${stack ? `\n\`\`\`\n${stack}\n\`\`\`` : ""}`,
     );

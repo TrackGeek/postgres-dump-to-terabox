@@ -1,6 +1,13 @@
 import { existsSync, readFileSync } from "node:fs";
 import { logger } from "../logger";
-import { cookieHeader, SessionExpiredError, TERABOX_ORIGIN, USER_AGENT } from "./constants";
+import {
+  cookieHeader,
+  isNetworkFailure,
+  NetworkError,
+  SessionExpiredError,
+  TERABOX_ORIGIN,
+  USER_AGENT,
+} from "./constants";
 
 export interface TeraboxCredentials {
   ndus: string;
@@ -18,6 +25,10 @@ interface Session {
 }
 
 const MAIN_PAGE_URL = `${TERABOX_ORIGIN}/main?category=all`;
+
+/** A resolver that is only briefly deaf (EAI_AGAIN right after boot) deserves a second chance. */
+const FETCH_ATTEMPTS = 2;
+const FETCH_RETRY_DELAY_MS = 2000;
 
 /**
  * Terabox embeds the token in the page as the URL-encoded call `fn("<TOKEN>")`.
@@ -66,16 +77,38 @@ function readSession(storageStatePath: string): Session {
   return { ndus, cookies: header };
 }
 
+async function fetchMainPage(session: Session): Promise<Response> {
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= FETCH_ATTEMPTS; attempt += 1) {
+    try {
+      return await fetch(MAIN_PAGE_URL, {
+        headers: {
+          Cookie: session.cookies,
+          "User-Agent": USER_AGENT,
+          Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+          "Accept-Language": "en-US,en;q=0.9",
+        },
+        redirect: "follow",
+      });
+    } catch (error) {
+      lastError = error;
+
+      if (attempt < FETCH_ATTEMPTS) {
+        logger.warn("Terabox main page request failed, retrying", {
+          attempt,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        await new Promise((resolve) => setTimeout(resolve, FETCH_RETRY_DELAY_MS));
+      }
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
 async function jsTokenViaFetch(session: Session): Promise<string | null> {
-  const response = await fetch(MAIN_PAGE_URL, {
-    headers: {
-      Cookie: session.cookies,
-      "User-Agent": USER_AGENT,
-      Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-      "Accept-Language": "en-US,en;q=0.9",
-    },
-    redirect: "follow",
-  });
+  const response = await fetchMainPage(session);
 
   if (!response.ok) {
     logger.warn("Terabox main page returned a non-OK status", { status: response.status });
@@ -96,7 +129,12 @@ async function jsTokenViaFetch(session: Session): Promise<string | null> {
  */
 async function jsTokenViaPlaywright(storageStatePath: string): Promise<string | null> {
   const { chromium } = await import("playwright");
-  const browser = await chromium.launch({ headless: true });
+  // Chromium's built-in async resolver ignores part of the container's DNS setup and
+  // fails with ERR_NAME_NOT_RESOLVED where getaddrinfo (and therefore fetch) succeeds.
+  const browser = await chromium.launch({
+    headless: true,
+    args: ["--disable-features=AsyncDns", "--dns-prefetch-disable"],
+  });
 
   try {
     const context = await browser.newContext({ storageState: storageStatePath, userAgent: USER_AGENT });
@@ -134,12 +172,32 @@ export async function getCredentials(storageStatePath: string): Promise<TeraboxC
 
     logger.warn("jsToken not found in the fetched HTML, falling back to Playwright");
   } catch (error) {
+    // Playwright goes out over the same network stack, so retrying there only buys
+    // a 60 s timeout and an error that blames the session for a DNS problem.
+    if (isNetworkFailure(error)) {
+      throw new NetworkError(
+        `Could not reach ${TERABOX_ORIGIN}: ${error instanceof Error ? error.message : String(error)}.`,
+      );
+    }
+
     logger.warn("Fetching the Terabox main page failed, falling back to Playwright", {
       error: error instanceof Error ? error.message : String(error),
     });
   }
 
-  const jsToken = await jsTokenViaPlaywright(storageStatePath);
+  let jsToken: string | null;
+
+  try {
+    jsToken = await jsTokenViaPlaywright(storageStatePath);
+  } catch (error) {
+    if (isNetworkFailure(error)) {
+      throw new NetworkError(
+        `Could not reach ${TERABOX_ORIGIN} from the browser: ${error instanceof Error ? error.message : String(error)}.`,
+      );
+    }
+
+    throw error;
+  }
 
   if (!jsToken) {
     throw new SessionExpiredError("Could not extract a jsToken through fetch or Playwright.");

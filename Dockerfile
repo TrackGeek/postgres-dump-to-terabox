@@ -1,7 +1,17 @@
-FROM oven/bun:1-debian
+# Chromium and every system lib it needs already live in this image, so the build never
+# downloads a browser nor runs `playwright install --with-deps` — the two slowest steps,
+# and the ones that hurt most in CI, where the arm64 build runs under QEMU emulation.
+# Keep this tag pinned to the exact "playwright" version in package.json: the browsers
+# baked in are the ones that release expects.
+FROM mcr.microsoft.com/playwright:v1.62.1-noble
+
+# The base image ships Node, not Bun. `bunx` is the same binary under another name.
+COPY --from=oven/bun:1-debian /usr/local/bin/bun /usr/local/bin/bun
+RUN ln -s /usr/local/bin/bun /usr/local/bin/bunx
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
+    PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
     TMP_DIR=/app/tmp \
     TERABOX_STORAGE_STATE=/app/secrets/storageState.json
 
@@ -25,8 +35,12 @@ WORKDIR /app
 COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile
 
-# Chromium is only the jsToken fallback, but a fallback that cannot start is not one.
-RUN bunx playwright install --with-deps chromium && rm -rf /var/lib/apt/lists/*
+# A bumped playwright package expects a Chromium revision this image does not carry, and
+# the failure would otherwise surface at 3 a.m. in a cron run. Fail here instead.
+RUN set -eu; \
+    location="$(bunx playwright install chromium --dry-run | awk '/Install location/ { print $3; exit }')"; \
+    test -d "$location" \
+      || { echo "Missing $location: the playwright package and the base image tag drifted apart."; exit 1; }
 
 COPY tsconfig.json biome.json ./
 COPY types ./types

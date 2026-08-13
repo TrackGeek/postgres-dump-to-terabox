@@ -16,6 +16,11 @@ services:
       - backup-tmp:/app/tmp
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    # The host resolver is not reachable from the container on every setup (a VPN on
+    # the host is enough to break it), and Terabox is the first thing that needs DNS.
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
 
 volumes:
   backup-tmp:
